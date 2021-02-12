@@ -175,6 +175,9 @@ type childQuery struct {
 }
 
 func (c *childQuery) Select(t iterator) NodeNavigator {
+	count := 0
+	isUndefined := false
+
 	for {
 		if c.iterator == nil {
 			c.posit = 0
@@ -187,17 +190,25 @@ func (c *childQuery) Select(t iterator) NodeNavigator {
 			c.iterator = func() NodeNavigator {
 				for {
 					if (first && !node.MoveToChild()) || (!first && !node.MoveToNext()) {
+						if count == 0 {
+							isUndefined = true
+							count++
+							return node
+						}
+
 						return nil
 					}
 					first = false
 					if c.Predicate(node) {
+						count++
 						return node
 					}
 				}
 			}
 		}
 
-		if node := c.iterator(); node != nil {
+		node := c.iterator()
+		if node != nil || isUndefined {
 			c.posit++
 			return node
 		}
