@@ -562,12 +562,16 @@ func (f *filterQuery) do(t iterator) bool {
 	val := reflect.ValueOf(f.Predicate.Evaluate(t))
 	switch val.Kind() {
 	case reflect.Bool:
+		if getNodePosition(f.Input) == -1 {
+			return true
+		}
 		return val.Bool()
 	case reflect.String:
 		return len(val.String()) > 0
 	case reflect.Float64:
 		pt := getNodePosition(f.Input)
-		return int(val.Float()) == pt
+		// allow nil nodes with -1 position
+		return int(val.Float()) == pt || pt == -1
 	default:
 		if q, ok := f.Predicate.(query); ok {
 			return q.Select(t) != nil
@@ -593,7 +597,90 @@ func (f *filterQuery) Select(t iterator) NodeNavigator {
 		node = node.Copy()
 
 		t.Current().MoveTo(node)
-		if f.do(t) {
+
+		exception := false
+		foundNext := false
+
+		localName := node.LocalName()
+		tempNode := node.Copy()
+		// if no next node, enable exception (filler node)
+		for tempNode.MoveToNext() {
+			if tempNode.LocalName() == localName {
+				foundNext = true
+				break
+			}
+		}
+
+		if !foundNext {
+			exception = true
+		}
+
+		foundPrev := false
+		val := reflect.ValueOf(f.Predicate.Evaluate(t))
+		if val.Kind() == reflect.Float64 {
+			// disable exception if pos > val
+			if getNodePosition(f.Input) > int(val.Float()) {
+				exception = false
+
+				tempNode = node.Copy()
+				localName = node.LocalName()
+
+				// if no previous node, enable exception (filler node)
+				for tempNode.MoveToPrevious() {
+					if tempNode.LocalName() == localName {
+						foundPrev = true
+						break
+					}
+				}
+
+				if !foundPrev {
+					exception = true
+				}
+			}
+		} else if val.Kind() == reflect.Bool {
+			foundNext = false
+			exception = false
+			if !f.do(t) {
+				tempNode = node.Copy()
+				localName = node.LocalName()
+				for tempNode.MoveToNext() {
+					if tempNode.LocalName() == localName {
+						t.Current().MoveTo(tempNode)
+						if f.do(t) {
+							foundNext = true
+							break
+						}
+					}
+				}
+
+				// last node of kind
+				if !foundNext {
+					temp2Node := node.Copy()
+					for temp2Node.MoveToPrevious() {
+						if temp2Node.LocalName() == localName {
+							t.Current().MoveTo(temp2Node)
+							if f.do(t) {
+								foundPrev = true
+								break
+							}
+						}
+					}
+					if !foundPrev {
+						exception = true
+					}
+				}
+			}
+		}
+
+		t.Current().MoveTo(node)
+
+		if f.do(t) || exception {
+			// update nodes if purely exception
+			if !f.do(t) && exception {
+				t.Current().MoveTo(tempNode)
+				node = tempNode.Copy()
+			}
+
 			// fix https://github.com/antchfx/htmlquery/issues/26
 			// Calculate and keep the each of matching node's position in the same depth.
 			level := getNodeDepth(f.Input)
